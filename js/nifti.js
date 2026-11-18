@@ -84,8 +84,32 @@ export function zoomsFromAffine(a) {
   return [0, 1, 2].map((c) => Math.hypot(a[0][c], a[1][c], a[2][c]));
 }
 
-export function writeNifti({ dims, affine, data, datatype = 2 }) {
-  const bytesPer = { 2: 1, 4: 2, 16: 4 }[datatype];
+// mat44_to_quatern (nifti1_io.c): quaternion + qfac a partir da parte rotacional do affine
+function affineToQuatern(a) {
+  let r11 = a[0][0], r12 = a[0][1], r13 = a[0][2], r21 = a[1][0], r22 = a[1][1], r23 = a[1][2], r31 = a[2][0], r32 = a[2][1], r33 = a[2][2];
+  const dx = Math.hypot(r11, r21, r31) || 1, dy = Math.hypot(r12, r22, r32) || 1, dz = Math.hypot(r13, r23, r33) || 1;
+  r11 /= dx; r21 /= dx; r31 /= dx; r12 /= dy; r22 /= dy; r32 /= dy; r13 /= dz; r23 /= dz; r33 /= dz;
+  const det = r11 * (r22 * r33 - r32 * r23) - r12 * (r21 * r33 - r31 * r23) + r13 * (r21 * r32 - r31 * r22);
+  let qfac = 1;
+  if (det < 0) { qfac = -1; r13 = -r13; r23 = -r23; r33 = -r33; }
+  let qa = r11 + r22 + r33 + 1, qb, qc, qd;
+  if (qa > 0.5) {
+    qa = 0.5 * Math.sqrt(qa); qb = 0.25 * (r32 - r23) / qa; qc = 0.25 * (r13 - r31) / qa; qd = 0.25 * (r21 - r12) / qa;
+  } else {
+    const xd = 1 + r11 - (r22 + r33), yd = 1 + r22 - (r11 + r33), zd = 1 + r33 - (r11 + r22);
+    if (xd > 1) { qb = 0.5 * Math.sqrt(xd); qc = 0.25 * (r12 + r21) / qb; qd = 0.25 * (r13 + r31) / qb; qa = 0.25 * (r32 - r23) / qb; }
+    else if (yd > 1) { qc = 0.5 * Math.sqrt(yd); qb = 0.25 * (r12 + r21) / qc; qd = 0.25 * (r23 + r32) / qc; qa = 0.25 * (r13 - r31) / qc; }
+    else { qd = 0.5 * Math.sqrt(zd); qb = 0.25 * (r13 + r31) / qd; qc = 0.25 * (r23 + r32) / qd; qa = 0.25 * (r21 - r12) / qd; }
+    if (qa < 0) { qb = -qb; qc = -qc; qd = -qd; }
+  }
+  return { qb, qc, qd, qfac };
+}
+
+// datatype: 2 uint8, 4 int16, 512 uint16, 16 float32. slope/inter vão para scl_slope/scl_inter.
+// qform: também grava o qform (código 1) além do sform, como o dcm2niix.
+export function writeNifti({ dims, affine, data, datatype = 2, slope = 1, inter = 0, descrip = '', qform = false }) {
+  const bytesPer = { 2: 1, 4: 2, 512: 2, 16: 4 }[datatype];
+  if (!bytesPer) throw new Error(`writeNifti: datatype ${datatype} não suportado`);
   const n = dims[0] * dims[1] * dims[2];
   const buf = new ArrayBuffer(352 + n * bytesPer);
   const dv = new DataView(buf);
@@ -95,20 +119,27 @@ export function writeNifti({ dims, affine, data, datatype = 2 }) {
   dv.setInt16(70, datatype, true);
   dv.setInt16(72, bytesPer * 8, true);
   const z = zoomsFromAffine(affine);
-  const pix = [1, z[0], z[1], z[2], 1, 1, 1, 1];
+  const q = qform ? affineToQuatern(affine) : null;
+  const pix = [q ? q.qfac : 1, z[0], z[1], z[2], 1, 1, 1, 1];
   pix.forEach((v, i) => dv.setFloat32(76 + 4 * i, v, true));
   dv.setFloat32(108, 352, true);
-  dv.setFloat32(112, 1, true); dv.setFloat32(116, 0, true);
+  dv.setFloat32(112, slope, true); dv.setFloat32(116, inter, true);
   dv.setUint8(123, 10); // xyzt_units: mm + s
-  dv.setInt16(252, 0, true); // qform_code
+  for (let i = 0; i < Math.min(79, descrip.length); i++) dv.setUint8(148 + i, descrip.charCodeAt(i) & 0x7f);
+  dv.setInt16(252, q ? 1 : 0, true); // qform_code
   dv.setInt16(254, 1, true); // sform_code (scanner)
+  if (q) {
+    dv.setFloat32(256, q.qb, true); dv.setFloat32(260, q.qc, true); dv.setFloat32(264, q.qd, true);
+    dv.setFloat32(268, affine[0][3], true); dv.setFloat32(272, affine[1][3], true); dv.setFloat32(276, affine[2][3], true);
+  }
   for (let r = 0; r < 3; r++) for (let c = 0; c < 4; c++) dv.setFloat32(280 + 16 * r + 4 * c, affine[r][c], true);
   const magic = [0x6e, 0x2b, 0x31, 0x00]; // "n+1\0"
   magic.forEach((v, i) => dv.setUint8(344 + i, v));
-  for (let i = 0; i < n; i++) {
+  if (datatype === 2) new Uint8Array(buf, 352).set(data); // mesma conversão (ToUint8) que setUint8
+  else for (let i = 0; i < n; i++) {
     const o = 352 + i * bytesPer, v = data[i];
-    if (datatype === 2) dv.setUint8(o, v);
-    else if (datatype === 4) dv.setInt16(o, v, true);
+    if (datatype === 4) dv.setInt16(o, v, true);
+    else if (datatype === 512) dv.setUint16(o, v, true);
     else dv.setFloat32(o, v, true);
   }
   return new Uint8Array(buf);

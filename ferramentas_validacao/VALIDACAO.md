@@ -19,3 +19,24 @@ para servir de referência de volume. Ela serviu apenas para conferir a equival�
 
 Scripts: `export_onnx.py` (conversão + checagem), `make_standin.py` (modelos-substitutos), `py_ref_driver.py` e
 `py_ref_seg.py` (rodam o código original com ONNX Runtime), `node_pipeline_test.mjs` (pipeline JS em Node), `compare.py`.
+
+## Conversão DICOM → NIfTI (etapa antes do pipeline)
+
+Volume sintético 72×80×50 com voxel 0,75×0,8×0,7 mm em orientação **oblíqua** (12° e −7°), fatias gravadas em ordem
+aleatória e arquivos sem extensão. Comparação do NIfTI gerado por `js/dicom.js` com a verdade e com o `dcm2niix`
+(v1.0.20261029), após `nibabel.as_closest_canonical`:
+
+| Codificação | Δ dados × verdade | Δ affine × verdade | × dcm2niix |
+| --- | --- | --- | --- |
+| VR explícita LE / implícita LE / explícita BE | 0 | ≤ 3×10⁻⁷ | dados idênticos, Δ affine 3×10⁻⁵ |
+| int16 com sinal + RescaleSlope 1,5 / Intercept 3 | 0 | ≤ 3×10⁻⁷ | idem |
+| RLE Lossless | 0 | ≤ 3×10⁻⁷ | idem |
+| Deflate | 0 | ≤ 3×10⁻⁷ | dcm2niix não lê deflate |
+| Enhanced MR multiframe (quadros embaralhados, RescaleSlope 2 no grupo compartilhado) | 0 | ≤ 3×10⁻⁷ | dados idênticos; dcm2niix desloca 0,55 mm neste arquivo sintético (sem DimensionIndexSequence) |
+| JPEG sem perdas SV1 e processo 14 (GDCM), inclusive com sinal | 0 | ≤ 3×10⁻⁷ | — |
+
+Exame misto (localizador, T1 MPRAGE, T2 TSE 2D, T2 SPACE 0,8 iso, MPR derivada, FLAIR 3D, T2 3D com fatia faltando):
+a sugestão automática escolhe a T2 SPACE 0,8 iso; localizador e série com fatia faltando ficam bloqueados.
+O NIfTI convertido passa pela reorientação LAS, normalização e reamostragem do pipeline sem alteração de código.
+
+Scripts em `dicom/` (`bash roda_validacao.sh <pasta_de_trabalho>`; requer pydicom, nibabel, python-gdcm, dcm2niix, node).

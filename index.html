@@ -26,10 +26,15 @@
   <section class="panel subjects">
     <div class="panel-head">
       <h2>Sujeitos</h2>
-      <label class="btn small" for="fileInput">Adicionar NIfTI</label>
+      <div class="head-btns">
+        <label class="btn small" for="fileInput">Adicionar NIfTI</label>
+        <label class="btn small" for="dicomInput" title="Selecione a pasta do exame (ou uma pasta com vários exames). Você escolherá a série T2 3D, que será convertida para NIfTI antes do processamento.">Adicionar DICOM</label>
+      </div>
       <input type="file" id="fileInput" accept=".nii,.gz,.nii.gz" multiple hidden>
+      <input type="file" id="dicomInput" webkitdirectory multiple hidden>
     </div>
-    <div id="drop" class="drop">Solte aqui arquivos <b>.nii</b> / <b>.nii.gz</b> (T2 3D isotrópico 0,7–0,8 mm, cérebro inteiro)</div>
+    <div id="drop" class="drop">Solte aqui arquivos <b>.nii</b> / <b>.nii.gz</b> ou <b>pastas DICOM</b> do exame
+      (T2 3D isotrópico 0,7–0,8 mm, cérebro inteiro). No DICOM, você escolhe a série T2 3D e ela é convertida para NIfTI.</div>
     <div class="table-wrap">
       <table id="subjTable">
         <thead><tr><th>ID</th><th>Grupo</th><th>Status</th><th title="Volume total automático">Total (mm³)</th></tr></thead>
@@ -124,6 +129,20 @@
     <div id="details" class="muted">Nenhum sujeito selecionado.</div>
   </section>
 </main>
+
+<dialog id="dlgDicom" class="wide">
+  <h3>Importar DICOM · 1) escolha a série T2 3D · 2) conversão para NIfTI</h3>
+  <p class="muted small">Séries agrupadas por estudo. A sugestão automática (★) prioriza aquisição 3D, nome T2/SPACE/CUBE/VISTA/DRIVE
+    e voxel isotrópico ≤ 0,9 mm; confira antes de converter. A conversão é feita no navegador (equivalente ao <code>dcm2niix</code>):
+    as fatias são ordenadas pela posição, a geometria vem de ImagePositionPatient/ImageOrientationPatient/PixelSpacing e as
+    intensidades recebem RescaleSlope/Intercept.</p>
+  <div id="dicomStudies"></div>
+  <label class="op"><input type="checkbox" id="dicomSaveNii"> Baixar também os NIfTI convertidos (.nii.gz)</label>
+  <div class="dlg-actions">
+    <button class="btn ghost" id="dicomCancel">Cancelar</button>
+    <button class="btn primary" id="dicomConvert">Converter para NIfTI e adicionar</button>
+  </div>
+</dialog>
 
 <dialog id="dlg">
   <div id="dlgBody"></div>
