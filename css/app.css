@@ -16,7 +16,7 @@ h2{font-size:14px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.6px;co
 .engine{font-size:12px;background:rgba(255,255,255,.12);padding:5px 10px;border-radius:999px}
 .layout{flex:1;display:grid;grid-template-columns:330px 1fr 340px;gap:10px;padding:10px;min-height:0}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;display:flex;flex-direction:column;min-height:0}
-.panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.panel-head{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:8px}
 .panel-head h2{margin:0}
 .drop{border:1.5px dashed #b8c6c2;border-radius:8px;padding:12px;text-align:center;color:var(--muted);font-size:12px;margin-bottom:8px}
 .drop.over{border-color:var(--accent);background:#e8f3f2}
@@ -82,5 +82,21 @@ h3{font-size:13px;margin:12px 0 4px}
 .foot a{color:var(--accent)}
 dialog{border:1px solid var(--line);border-radius:10px;max-width:640px;width:92vw}
 dialog::backdrop{background:rgba(10,30,30,.35)}
-.dlg-actions{display:flex;justify-content:flex-end;margin-top:12px}
+.dlg-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+.head-btns{display:flex;gap:6px}
+dialog.wide{max-width:1040px}
+.small{font-size:12px}
+.study{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:10px 0}
+.study-head{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:6px}
+.study-head .field{margin:0}
+.study-head .meta{font-size:12px;color:var(--muted);flex:1;min-width:180px}
+.series-wrap{overflow:auto;max-height:46vh}
+.series-table td,.series-table th{white-space:normal;font-size:12px;padding:4px 6px;vertical-align:top}
+.series-table tr.dis{color:#9aa6a9}
+.series-table td.nw{white-space:nowrap}
+.series-table tr.sug{background:#eef7f1}
+.series-table tbody tr{cursor:default}
+.series-table label{cursor:pointer;display:block}
+.tag{display:inline-block;font-size:11px;border-radius:999px;padding:1px 6px;margin:1px 2px 1px 0;background:#eef1f0;color:var(--muted)}
+.tag.sug{background:#e3f4e8;color:var(--ok)} .tag.warn{background:#fff3df;color:var(--warn)} .tag.bad{background:#fde7e5;color:var(--bad)}
 @media (max-width:1150px){.layout{grid-template-columns:1fr}.canvas-wrap{min-height:360px}}

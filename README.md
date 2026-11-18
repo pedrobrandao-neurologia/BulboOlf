@@ -13,8 +13,15 @@ Aplicativo web progressivo (PWA) que roda **no navegador, sem enviar imagens a s
 
 ## Entrada exigida pelo método automático
 
-- **T2 3D isotrópico de 0,7–0,8 mm, cérebro inteiro (cabeça inteira)**, em NIfTI-1 (`.nii` ou `.nii.gz`).
-  Converta DICOM com `dcm2niix -z y`.
+- **T2 3D isotrópico de 0,7–0,8 mm, cérebro inteiro (cabeça inteira)**, em NIfTI-1 (`.nii` ou `.nii.gz`) **ou DICOM**.
+- **DICOM:** *Adicionar DICOM* (ou arraste a pasta do exame). O app lê os cabeçalhos, agrupa as séries por estudo e
+  abre a **escolha da série T2 3D** (sugestão automática ★: aquisição 3D, nome T2/SPACE/CUBE/VISTA/DRIVE/CISS, voxel
+  isotrópico ≤ 0,9 mm; séries com fatias faltando ou vários volumes ficam bloqueadas). A série escolhida é então
+  **convertida para NIfTI no navegador** — fatias ordenadas pela posição, affine a partir de
+  ImagePositionPatient/ImageOrientationPatient/PixelSpacing, RescaleSlope/Intercept em `scl_slope/scl_inter`, como o
+  `dcm2niix` — e entra na fila como qualquer NIfTI. Uma pasta com vários exames gera um sujeito por estudo (ID sugerido
+  pelo nome da pasta). Opcionalmente o NIfTI convertido é baixado. Suporta DICOM clássico e multiframe (Enhanced MR),
+  sem compressão, deflate, RLE e JPEG sem perdas; para JPEG 2000 / JPEG-LS use `dcm2niix -z y` e adicione o NIfTI.
 - Imagens com outra resolução são reamostradas para 0,8 mm (como no original), mas o método **não foi validado**
   fora de 0,7–0,8 mm. Para T2 coronal 2D (fatias de 1–2 mm) use a planimetria manual.
 - Não use imagens desfiguradas (*defaced*) ou com extração de crânio: podem cortar o BO.
@@ -32,7 +39,8 @@ O PWA precisa ser servido por HTTP (não abre por `file://`).
 
 ## Fluxo sugerido (AF × controles)
 
-1. Adicione os NIfTI (o ID é tirado do nome do arquivo; grupo é sugerido se o nome tiver `AF`/`ctrl`).
+1. Adicione os NIfTI ou as pastas DICOM (o ID é tirado do nome do arquivo/pasta; grupo é sugerido se o nome tiver
+   `AF`/`ctrl`). No DICOM, escolha a série T2 3D de cada estudo → *Converter para NIfTI e adicionar*.
 2. Escolha **12 modelos** (padrão do artigo) e **localização automática** → *Processar pendentes*.
 3. Para cada sujeito: confira a segmentação na *grade do pipeline (0,8 mm)*; corrija com *Editar / planimetria* e
    clique *Registrar volumes*; meça o sulco; marque QC (`ok`, `revisar`, `excluir`).
@@ -55,6 +63,9 @@ quando o volume total < 20 mm³.
   planos, recorte 96³, ensemble, componentes conexos E/D, estatísticas) foi comparada com o **código Python original**
   usando modelos-substitutos: segmentação idêntica voxel a voxel (0 voxels discordantes) e estatísticas idênticas, em
   imagem 0,88 mm RAS (reamostrada) e 0,8 mm LIA int16 (sem reamostragem).
+- Conversão DICOM → NIfTI (`js/dicom.js`) × verdade sintética e × `dcm2niix`: dados idênticos voxel a voxel e affine
+  com erro ≤ 3×10⁻⁷ mm em 10 codificações (VR implícita/explícita, big endian, deflate, RLE, JPEG sem perdas SV1 e
+  processo 14, inteiros com sinal + RescaleSlope, multiframe), em orientação oblíqua — ver `ferramentas_validacao/dicom/`.
 - ONNX Runtime Web (navegador) × ONNX Runtime Python em fatias reais: probabilidades com diferença ≤ 2×10⁻⁷.
   Diferenças de logit aparecem só em pixels de fundo (zero), onde empates no max-pooling são desfeitos de forma
   diferente por cada motor — o mesmo ocorre entre CPU e GPU no PyTorch.

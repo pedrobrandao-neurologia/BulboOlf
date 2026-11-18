@@ -3,6 +3,7 @@ import { Niivue, NVImage } from '../vendor/niivue.js';
 import { parseNifti, gunzipIfNeeded, writeNifti, gzip, zoomsFromAffine } from './nifti.js';
 import { axCodes } from './pipeline.js';
 import { store } from './store.js';
+import { scanFile, groupSeries, convertToNifti, candidateWarnings, maybeDicom, filesFromDataTransfer } from './dicom.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -56,25 +57,125 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 function idFromName(n) { return n.replace(/\.nii(\.gz)?$/i, '').replace(/[_-]?(t2|T2w?|SPACE|space|cube|CUBE)[^/]*$/, '') || n; }
 
 async function addFiles(files) {
-  for (const f of files) {
-    if (!/\.nii(\.gz)?$/i.test(f.name)) { hint(`Ignorado (não é NIfTI): ${f.name}`); continue; }
-    const s = { uid: uid(), id: idFromName(f.name), fileName: f.name, file: f, group: guessGroup(f.name), age: '', sex: '', smell: '', qc: 'pendente', notes: '', status: 'novo' };
-    try {
-      const vol = parseNifti(await gunzipIfNeeded(await f.arrayBuffer()));
-      const z = zoomsFromAffine(vol.affine);
-      const warn = [];
-      if (z.some((v) => v > 0.9 || v < 0.6)) warn.push(`voxels ${z.map((v) => v.toFixed(2)).join('×')} mm: o modelo automático foi treinado em T2 3D isotrópico de 0,7–0,8 mm`);
-      if (Math.max(...z) / Math.min(...z) > 1.5) warn.push('voxels anisotrópicos (aquisição 2D?) — prefira a planimetria manual');
-      if (vol.nVolumes > 1) warn.push(`arquivo 4D (${vol.nVolumes} volumes): será usado o primeiro`);
-      s.info = { dims: vol.dims, zooms: z, codes: axCodes(vol.affine).join(''), warn };
-    } catch (e) { s.status = 'erro'; s.error = e.message; }
-    state.subjects.push(s);
-    await store.put(s);
-  }
-  renderTable();
-  if (!state.sel && state.subjects.length) select(state.subjects[0].uid);
+  const nii = files.filter((f) => /\.nii(\.gz)?$/i.test(f.name));
+  const others = files.filter((f) => !nii.includes(f));
+  for (const f of nii) await addNifti(f);
+  if (nii.length) { renderTable(); if (!state.sel && state.subjects.length) select(state.subjects[0].uid); }
+  const dcm = others.filter(maybeDicom);
+  if (dcm.length) await importDicom(dcm);
+  else if (others.length) hint(`Ignorado (não é NIfTI nem DICOM): ${others.slice(0, 3).map((f) => f.name).join(', ')}${others.length > 3 ? '…' : ''}`);
 }
-function guessGroup(n) { return /\b(af|frda|fa|friedreich|pac)/i.test(n) ? 'AF' : /\b(ctrl|controle|hc|control|cn)/i.test(n) ? 'Controle' : ''; }
+
+// extra: { id, group, dicom (metadados da série), convWarn (alertas da conversão) } quando vem do DICOM
+async function addNifti(f, extra = {}) {
+  const { convWarn = [], ...rest } = extra;
+  const s = { uid: uid(), id: idFromName(f.name), fileName: f.name, file: f, group: guessGroup(f.name), age: '', sex: '', smell: '', qc: 'pendente', notes: '', status: 'novo', ...rest };
+  try {
+    const vol = parseNifti(await gunzipIfNeeded(await f.arrayBuffer()));
+    const z = zoomsFromAffine(vol.affine);
+    const warn = [];
+    if (z.some((v) => v > 0.9 || v < 0.6)) warn.push(`voxels ${z.map((v) => v.toFixed(2)).join('×')} mm: o modelo automático foi treinado em T2 3D isotrópico de 0,7–0,8 mm`);
+    if (Math.max(...z) / Math.min(...z) > 1.5) warn.push('voxels anisotrópicos (aquisição 2D?) — prefira a planimetria manual');
+    if (vol.nVolumes > 1) warn.push(`arquivo 4D (${vol.nVolumes} volumes): será usado o primeiro`);
+    for (const w of convWarn) if (!/anisotr|0,7–0,8/.test(w)) warn.push(w); // evita repetir os alertas de voxel acima
+    s.info = { dims: vol.dims, zooms: z, codes: axCodes(vol.affine).join(''), warn };
+  } catch (e) { s.status = 'erro'; s.error = e.message; }
+  state.subjects.push(s);
+  await store.put(s);
+  return s;
+}
+
+// ---------------- DICOM: escolha da série T2 3D -> conversão para NIfTI -> fila do pipeline ----------------
+function progress(frac, msg) { $('#progBar').style.width = `${Math.round(frac * 100)}%`; $('#progMsg').textContent = msg; }
+async function importDicom(files) {
+  if (state.dicomBusy) { hint('Já há uma importação DICOM em andamento.'); return; }
+  state.dicomBusy = true;
+  try {
+    const slices = [];
+    let notDicom = 0;
+    for (let i = 0; i < files.length; i++) {
+      try { const r = await scanFile(files[i]); if (!r.length) notDicom++; slices.push(...r); } catch { notDicom++; }
+      if (i % 25 === 0 || i === files.length - 1) progress((i + 1) / files.length, `Lendo cabeçalhos DICOM ${i + 1}/${files.length}…`);
+    }
+    const studies = groupSeries(slices).filter((st) => st.series.length);
+    if (!studies.length) { progress(0, ''); hint(`Nenhuma imagem DICOM encontrada em ${files.length} arquivo(s).`); return; }
+    progress(1, `${slices.length} imagens DICOM em ${studies.length} estudo(s)${notDicom ? ` · ${notDicom} arquivo(s) ignorado(s)` : ''}. Escolha a série T2 3D.`);
+    const choices = await chooseSeries(studies);
+    if (!choices?.length) { progress(0, 'Importação DICOM cancelada.'); return; }
+    const saveNii = $('#dicomSaveNii').checked;
+    let last = null;
+    for (const [n, ch] of choices.entries()) {
+      const tag = `${ch.id} (${n + 1}/${choices.length})`;
+      try {
+        const r = await convertToNifti(ch.cand, (f) => progress(f, `${tag}: convertendo DICOM → NIfTI… ${Math.round(f * 100)}%`));
+        const name = `${ch.id.replace(/[^\w.-]+/g, '_')}_T2_3D.nii.gz`;
+        const file = new File([r.bytes], name, { type: 'application/gzip' });
+        if (saveNii) download(name, r.bytes, 'application/gzip');
+        last = await addNifti(file, { id: ch.id, group: ch.group, dicom: r.meta, convWarn: r.warnings });
+        renderTable();
+      } catch (e) {
+        hint(`Erro ao converter ${ch.id}: ${e.message}`);
+        const s = { uid: uid(), id: ch.id, fileName: `DICOM série ${ch.cand.seriesNumber ?? ''} ${ch.cand.label}`, group: ch.group, age: '', sex: '', smell: '', qc: 'pendente', notes: '', status: 'erro', error: `Conversão DICOM → NIfTI falhou: ${e.message}. Converta com dcm2niix -z y e adicione o NIfTI.` };
+        state.subjects.push(s); await store.put(s);
+      }
+    }
+    renderTable();
+    if (last) await select(last.uid); // o visualizador limpa a mensagem de progresso: selecionar antes
+    progress(1, `Conversão concluída: ${choices.length} série(s) adicionada(s) como NIfTI. Clique em "Processar".`);
+  } finally { state.dicomBusy = false; }
+}
+
+function chooseSeries(studies) {
+  const dlg = $('#dlgDicom'), box = $('#dicomStudies');
+  const f2 = (v) => (Number.isFinite(v) ? v.toLocaleString('pt-BR', { maximumFractionDigits: 2 }) : '?');
+  const fdate = (d) => (/^\d{8}$/.test(d) ? `${d.slice(6, 8)}/${d.slice(4, 6)}/${d.slice(0, 4)}` : d || '');
+  box.innerHTML = studies.map((st, si) => {
+    const sug = st.series.find((c) => c.suggested);
+    const rows = st.series.map((c, ci) => {
+      const warns = candidateWarnings(c);
+      const tags = [c.suggested ? '<span class="tag sug">★ sugerida</span>' : '',
+        ...c.problems.map((p) => `<span class="tag bad">${esc(p)}</span>`), ...warns.map((w) => `<span class="tag warn">${esc(w)}</span>`)].join('');
+      const desc = [c.protocolName && c.protocolName !== c.label ? c.protocolName : '', c.sequenceName].filter(Boolean).join(' · ');
+      return `<tr class="${c.ok ? '' : 'dis'} ${c.suggested ? 'sug' : ''}">
+        <td><input type="radio" name="st${si}" value="${ci}" id="st${si}_${ci}" ${c.ok ? '' : 'disabled'} ${c === sug ? 'checked' : ''}></td>
+        <td>${c.seriesNumber ?? ''}</td>
+        <td><label for="st${si}_${ci}"><b>${esc(c.label)}</b>${desc ? `<br><span class="muted">${esc(desc)}</span>` : ''}</label></td>
+        <td>${esc(c.mrAcqType || '?')}</td><td>${esc(c.plane)}</td><td>${c.n}</td><td>${c.cols}×${c.rows}</td>
+        <td class="nw">${c.voxel.map(f2).join(' × ')}</td><td class="nw">${f2(c.te)} / ${f2(c.tr)}</td><td>${tags}</td></tr>`;
+    }).join('');
+    const meta = [fdate(st.studyDate), st.studyDescription, st.dir.length ? `pasta: ${st.dir.join('/')}` : ''].filter(Boolean).map(esc).join(' · ');
+    return `<div class="study" data-si="${si}">
+      <div class="study-head">
+        <label class="field">ID do sujeito <input type="text" class="st-id" value="${esc(st.suggestedId)}"></label>
+        <label class="field">Grupo <select class="st-group">${['', 'AF', 'Controle', 'Outro'].map((g) => `<option ${g === guessGroup(st.suggestedId) ? 'selected' : ''}>${g}</option>`).join('')}</select></label>
+        <div class="meta">Estudo ${si + 1}/${studies.length}${meta ? ' · ' + meta : ''}</div>
+      </div>
+      <div class="series-wrap"><table class="series-table">
+        <thead><tr><th></th><th>Nº</th><th>Série</th><th>Aquis.</th><th>Plano</th><th>Imagens</th><th>Matriz</th><th>Voxel (mm)</th><th>TE / TR (ms)</th><th>Situação</th></tr></thead>
+        <tbody>${rows}
+          <tr><td><input type="radio" name="st${si}" value="-1" id="st${si}_none" ${sug ? '' : 'checked'}></td><td></td><td colspan="8"><label for="st${si}_none" class="muted">Não importar este estudo</label></td></tr>
+        </tbody></table></div>
+    </div>`;
+  }).join('');
+  return new Promise((resolve) => {
+    const finish = (val) => { dlg.onclose = null; if (dlg.open) dlg.close(); resolve(val); };
+    $('#dicomCancel').onclick = () => finish(null);
+    dlg.onclose = () => finish(null); // Esc
+    $('#dicomConvert').onclick = () => {
+      const out = [];
+      box.querySelectorAll('.study').forEach((el) => {
+        const st = studies[Number(el.dataset.si)];
+        const ci = Number(el.querySelector('input[type=radio]:checked')?.value ?? -1);
+        if (ci < 0) return;
+        out.push({ cand: st.series[ci], id: el.querySelector('.st-id').value.trim() || st.suggestedId, group: el.querySelector('.st-group').value });
+      });
+      if (!out.length) { hint('Nenhuma série escolhida.'); }
+      finish(out);
+    };
+    dlg.showModal();
+  });
+}
+function guessGroup(n) { return /(^|[^a-z])(af|frda|fa|friedreich|pac)/i.test(n) ? 'AF' : /(^|[^a-z])(ctrl|controle|hc|control|cn)/i.test(n) ? 'Controle' : ''; }
 
 function renderTable() {
   const tb = $('#subjTable tbody');
@@ -120,6 +221,13 @@ function renderDetails() {
     <label class="field">Controle de qualidade <select data-k="qc">${['pendente', 'ok', 'revisar', 'excluir'].map((g) => `<option ${g === s.qc ? 'selected' : ''}>${g}</option>`).join('')}</select></label>
   </div>
   <div class="kv"><div>Arquivo</div><div>${esc(s.fileName)}</div>`;
+  if (s.dicom) {
+    const d = s.dicom, f2 = (v) => (Number.isFinite(v) ? fmt(v, v % 1 ? 1 : 0) : '?');
+    h += `<div>Origem DICOM</div><div>série ${esc(d.seriesNumber ?? '')} · ${esc(d.seriesDescription)}</div>
+      <div>Aquisição</div><div>${esc(d.mrAcqType || '?')} · ${esc(d.plane)} · TE ${f2(d.te)} / TR ${f2(d.tr)} ms</div>
+      <div>Equipamento</div><div>${esc([d.manufacturer, d.model, d.fieldStrength ? `${d.fieldStrength} T` : ''].filter(Boolean).join(' '))}</div>
+      <div>Conversão</div><div>${d.nImages} imagens · ${esc(d.transferSyntax)}</div>`;
+  }
   if (s.info) h += `<div>Matriz / voxel</div><div>${s.info.dims.join('×')} · ${s.info.zooms.map((v) => v.toFixed(2)).join('×')} mm · ${s.info.codes}</div>`;
   if (s.center) h += `<div>Centro manual (mm)</div><div>${s.center.map((v) => v.toFixed(1)).join(', ')}</div>`;
   h += '</div>';
@@ -340,7 +448,7 @@ function csv() {
   const cols = ['sub_id', 'arquivo', 'grupo', 'idade', 'sexo', 'escore_olfativo', 'qc', 'n_modelos', 'localizacao', 'motor', 'reamostrado_0.8mm', 'voxel_entrada_mm',
     'OB_E_vol_mm3', 'OB_D_vol_mm3', 'OB_total_vol_mm3', 'OB_E_nvox', 'OB_D_nvox', 'OB_E_entropia', 'OB_D_entropia', 'OB_total_entropia', 'OB_E_CV', 'OB_D_CV', 'OB_total_CV',
     'OB_E_intensidade_media', 'OB_D_intensidade_media', 'dist_loc_seg_mm', 'alerta',
-    'OB_E_vol_revisado_mm3', 'OB_D_vol_revisado_mm3', 'OB_total_vol_revisado_mm3', 'grade_revisao', 'sulco_E_mm', 'sulco_D_mm', 'notas', 'data_processamento'];
+    'OB_E_vol_revisado_mm3', 'OB_D_vol_revisado_mm3', 'OB_total_vol_revisado_mm3', 'grade_revisao', 'sulco_E_mm', 'sulco_D_mm', 'notas', 'data_processamento', 'serie_dicom', 'dicom_TE_ms', 'dicom_TR_ms'];
   const q = (v) => { if (v === undefined || v === null || Number.isNaN(v)) return ''; const t = String(v); return /[",\n;]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
   const lines = [cols.join(',')];
   for (const s of state.subjects) {
@@ -348,7 +456,8 @@ function csv() {
     lines.push([s.id, s.fileName, s.group, s.age, s.sex, s.smell, s.qc, a?.nModels, a?.locMode, a?.backend, a ? (a.resampled ? 'sim' : 'nao') : '', s.info?.zooms.map((v) => v.toFixed(3)).join('x'),
       R?.Left_OB.Volume_mm3, R?.Right_OB.Volume_mm3, R?.Total_OB.Volume_mm3, R?.Left_OB.NVoxels, R?.Right_OB.NVoxels, R?.Left_OB.Entropy, R?.Right_OB.Entropy, R?.Total_OB.Entropy,
       R?.Left_OB.CV, R?.Right_OB.CV, R?.Total_OB.CV, R?.Left_OB.normMean, R?.Right_OB.normMean, a?.stats.locSegDist, a?.stats.flag,
-      c ? c.L.toFixed(3) : '', c ? c.R.toFixed(3) : '', c ? (c.L + c.R).toFixed(3) : '', c?.grid, s.os?.L?.depth?.toFixed(3), s.os?.R?.depth?.toFixed(3), s.notes, a?.date].map(q).join(','));
+      c ? c.L.toFixed(3) : '', c ? c.R.toFixed(3) : '', c ? (c.L + c.R).toFixed(3) : '', c?.grid, s.os?.L?.depth?.toFixed(3), s.os?.R?.depth?.toFixed(3), s.notes, a?.date,
+      s.dicom ? `${s.dicom.seriesNumber ?? ''} ${s.dicom.seriesDescription}`.trim() : '', s.dicom?.te, s.dicom?.tr].map(q).join(','));
   }
   return '﻿' + lines.join('\n');
 }
@@ -402,7 +511,8 @@ $('#fileInput').onchange = (e) => { addFiles([...e.target.files]); e.target.valu
 const drop = $('#drop');
 ['dragenter', 'dragover'].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add('over'); }));
 ['dragleave', 'drop'].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove('over'); }));
-drop.addEventListener('drop', (e) => addFiles([...e.dataTransfer.files]));
+drop.addEventListener('drop', async (e) => addFiles(await filesFromDataTransfer(e.dataTransfer)));
+$('#dicomInput').onchange = (e) => { const fs = [...e.target.files]; e.target.value = ''; addFiles(fs); };
 $('#btnRunSel').onclick = () => { const s = cur(); if (s) runQueue([s]); };
 $('#btnRunAll').onclick = () => runQueue(state.subjects.filter((s) => !s.auto && s.file));
 $('#btnCancel').onclick = () => { state.running = false; worker.postMessage({ type: 'cancel' }); };

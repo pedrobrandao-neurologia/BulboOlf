@@ -1,6 +1,6 @@
 // sw.js — cache offline + cabeçalhos COOP/COEP (permitem WASM multithread no GitHub Pages)
-const CACHE = 'bulboolf-v1';
-const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/pipeline.js', 'js/nifti.js', 'js/worker.js', 'js/store.js',
+const CACHE = 'bulboolf-v2';
+const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/pipeline.js', 'js/nifti.js', 'js/dicom.js', 'js/worker.js', 'js/store.js',
   'vendor/niivue.js', 'vendor/ort.webgpu.min.mjs', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
