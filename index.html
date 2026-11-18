@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BulboOlf — volumetria do bulbo olfatório por RM</title>
+<meta name="theme-color" content="#0f3d3e">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <img src="icons/icon-192.png" alt="" width="28" height="28">
+    <div>
+      <h1>BulboOlf</h1>
+      <p>Volumetria do bulbo olfatório por RM · uso em pesquisa</p>
+    </div>
+  </div>
+  <div class="engine" id="engine">Iniciando…</div>
+</header>
+
+<main class="layout">
+  <!-- Coluna esquerda: sujeitos -->
+  <section class="panel subjects">
+    <div class="panel-head">
+      <h2>Sujeitos</h2>
+      <label class="btn small" for="fileInput">Adicionar NIfTI</label>
+      <input type="file" id="fileInput" accept=".nii,.gz,.nii.gz" multiple hidden>
+    </div>
+    <div id="drop" class="drop">Solte aqui arquivos <b>.nii</b> / <b>.nii.gz</b> (T2 3D isotrópico 0,7–0,8 mm, cérebro inteiro)</div>
+    <div class="table-wrap">
+      <table id="subjTable">
+        <thead><tr><th>ID</th><th>Grupo</th><th>Status</th><th title="Volume total automático">Total (mm³)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="run-box">
+      <div class="row">
+        <label>Ensemble
+          <select id="optMode">
+            <option value="all" selected>12 modelos (padrão do artigo)</option>
+            <option value="1">3 modelos (rápido, split 1)</option>
+          </select>
+        </label>
+        <label>Localização
+          <select id="optLoc">
+            <option value="auto" selected>Automática (3 redes)</option>
+            <option value="manual">Manual (clique no centro dos bulbos)</option>
+          </select>
+        </label>
+        <label>Motor
+          <select id="optEngine">
+            <option value="auto" selected>Automático (GPU se houver)</option>
+            <option value="wasm">Forçar CPU (WASM)</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <button class="btn primary" id="btnRunSel">Processar selecionado</button>
+        <button class="btn" id="btnRunAll">Processar pendentes</button>
+        <button class="btn ghost" id="btnCancel" disabled>Cancelar</button>
+      </div>
+      <div class="progress"><div id="progBar"></div></div>
+      <div class="progress-msg" id="progMsg"></div>
+    </div>
+    <div class="exports">
+      <button class="btn small" id="btnCsv">Exportar CSV</button>
+      <button class="btn small" id="btnSaveSession">Salvar sessão (JSON)</button>
+      <label class="btn small" for="sessionInput">Abrir sessão</label>
+      <input type="file" id="sessionInput" accept=".json" hidden>
+      <button class="btn small" id="btnPrefetch">Baixar modelos (offline)</button>
+      <button class="btn small" id="btnSelfTest">Autoteste</button>
+    </div>
+  </section>
+
+  <!-- Centro: visualizador -->
+  <section class="panel viewer">
+    <div class="toolbar">
+      <div class="seg">
+        <button data-view="coronal" class="on">Coronal</button>
+        <button data-view="axial">Axial</button>
+        <button data-view="sagittal">Sagital</button>
+        <button data-view="multi">3 planos</button>
+      </div>
+      <div class="seg" id="gridSeg" title="Grade exibida">
+        <button data-grid="native" class="on">Imagem original</button>
+        <button data-grid="pipeline">Grade do pipeline (0,8 mm)</button>
+      </div>
+      <div class="seg" id="zoomSeg" title="Zoom centrado na cruz">
+        <button data-zoom="1" class="on">1×</button><button data-zoom="2">2×</button><button data-zoom="4">4×</button><button data-zoom="8">8×</button>
+      </div>
+      <label class="op"><input type="checkbox" id="crossChk" checked> cruz</label>
+      <label class="op">Opacidade <input type="range" id="opacity" min="0" max="1" step="0.05" value="0.55"></label>
+    </div>
+    <div class="canvas-wrap">
+      <canvas id="gl"></canvas>
+      <div id="viewerEmpty" class="viewer-empty">Selecione um sujeito para visualizar.</div>
+    </div>
+    <div class="toolbar tools">
+      <span class="tool-label">Ferramentas:</span>
+      <button class="btn small" id="toolCenter" title="Clique no ponto médio entre os dois bulbos (usado na localização manual)">Marcar centro dos bulbos</button>
+      <button class="btn small" id="toolEdit">Editar / planimetria</button>
+      <span id="penBox" class="pen" hidden>
+        <button data-pen="1" class="on">Bulbo esquerdo (1)</button>
+        <button data-pen="2">Bulbo direito (2)</button>
+        <button data-pen="0">Borracha</button>
+        <label><input type="checkbox" id="penFill"> preencher contorno</label>
+        <button id="penUndo">Desfazer</button>
+        <button id="penEmpty" title="Começar segmentação manual do zero na grade exibida">Desenho vazio</button>
+        <button id="penApply" class="primary">Registrar volumes</button>
+      </span>
+      <button class="btn small" id="toolSulcusL">Sulco olfatório E</button>
+      <button class="btn small" id="toolSulcusR">Sulco olfatório D</button>
+      <button class="btn small" id="btnSaveSeg">Baixar segmentação</button>
+    </div>
+    <div id="toolHint" class="hint"></div>
+  </section>
+
+  <!-- Direita: resultados -->
+  <section class="panel details">
+    <h2>Resultados</h2>
+    <div id="details" class="muted">Nenhum sujeito selecionado.</div>
+  </section>
+</main>
+
+<dialog id="dlg">
+  <div id="dlgBody"></div>
+  <div class="dlg-actions"><button class="btn" id="dlgClose">Fechar</button></div>
+</dialog>
+
+<footer class="foot">
+  Segmentação automática: porte para navegador do pipeline de Estrada S, et al. <i>NeuroImage</i> 2021;242:118464
+  (<a href="https://github.com/Deep-MI/olf-bulb-segmentation" target="_blank" rel="noopener">Deep-MI/olf-bulb-segmentation</a>, Apache-2.0).
+  As imagens são processadas localmente no navegador; nada é enviado a servidores. Ferramenta de pesquisa — não usar para diagnóstico.
+</footer>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
